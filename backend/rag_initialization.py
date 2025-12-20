@@ -1,37 +1,42 @@
-# FILE: backend-nusacare/rag_initialization.py (Untuk inisialisasi Chroma DB)
-
 import chromadb
-# Asumsikan Anda menginstal library embedding dari HuggingFace, misalnya sentence-transformers
-from sentence_transformers import SentenceTransformer 
-from ipfs_service import upload_to_ipfs # Modul IPFS Anda
+import uuid
+from chromadb.utils import embedding_functions
 
-# Inisialisasi Klien Chroma dan Model Embedding
-CHROMA_CLIENT = chromadb.Client()
-EMBEDDING_MODEL = SentenceTransformer('all-MiniLM-L6-v2') # 
+# 1. Inisialisasi Model Embedding (Sesuai Bab 3.4.3)
+huggingface_ef = embedding_functions.SentenceTransformerEmbeddingFunction(
+    model_name='all-MiniLM-L6-v2'
+)
+
+# 2. Hubungkan ke folder chroma_db_store Anda
+# Ini memastikan data herbal yang diinput Dokter tersimpan secara persisten
+CHROMA_CLIENT = chromadb.PersistentClient(path="./chroma_db_store")
 COLLECTION_NAME = "herbal_knowledge"
 
-def initialize_herbal_knowledge(data_herbal_mentah: list[dict]):
-    """Memproses data, menyimpan embedding di Chroma."""
-    
-    # 1. Simpan File Mentah di IPFS (Data Integrity)
-    # Anda akan mencatat CID ke Blockchain (smart contract) [cite: 540]
-    # (Logika Blockchain/Smart Contract akan ada di modul terpisah)
-
-    # 2. Pembersihan & Normalisasi Data (sesuai Bab 3.4.3) [cite: 566]
-    # ... (logika pembersihan) ...
-
-    # 3. Pembentukan Embedding [cite: 572]
-    texts = [d['text'] for d in data_herbal_mentah]
-    embeddings = EMBEDDING_MODEL.encode(texts).tolist()
-
-    # 4. Simpan ke Chroma DB [cite: 577]
-    collection = CHROMA_CLIENT.get_or_create_collection(name=COLLECTION_NAME)
-    collection.add(
-        embeddings=embeddings,
-        documents=texts,
-        metadatas=data_herbal_mentah, # Menyimpan metadata penting [cite: 579]
-        ids=[f"doc_{i}" for i in range(len(texts))]
+def add_to_chroma(herbal_data: dict):
+    """
+    Menambahkan data herbal terstruktur dari Dokter Herbal ke Vector Store.
+    """
+    collection = CHROMA_CLIENT.get_or_create_collection(
+        name=COLLECTION_NAME, 
+        embedding_function=huggingface_ef
     )
-    print("Basis Pengetahuan Herbal berhasil diinisialisasi di Chroma.")
 
-# Panggil fungsi ini sekali saat memulai layanan atau saat data herbal baru diunggah.
+    # Susun konten naratif untuk proses RAG (Retrieve)
+    text_content = (
+        f"Tanaman: {herbal_data['name']}. "
+        f"Manfaat: {herbal_data['benefit']}. "
+        f"Dosis: {herbal_data['dosage']}. "
+        f"Kontraindikasi: {herbal_data.get('contraindication', 'Tidak ada')}."
+    )
+
+    # Simpan ke Chroma DB dengan metadata lengkap
+    collection.add(
+        documents=[text_content],
+        metadatas=[{
+            "name": herbal_data['name'], 
+            "source": "Expert_Input",
+            "wallet": herbal_data.get('herbalist_wallet', 'unknown')
+        }],
+        ids=[f"herbal_{uuid.uuid4().hex}"] # ID unik untuk setiap entry
+    )
+    print(f"✅ [CHROMA] Data {herbal_data['name']} berhasil di-embed ke chroma_db_store.")

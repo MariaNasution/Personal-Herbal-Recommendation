@@ -33,63 +33,91 @@ GEMMA_LLM = HuggingFacePipeline(pipeline=gemma_pipeline)
 
 
 def generate_recommendation(context_data: dict) -> str:
-    if not GEMMA_MODEL:
+    print("[RAG] generate_recommendation START")
+
+    if not GEMMA_LLM:
         return "Sistem RAG belum siap. Model Gemma gagal dimuat."
 
-    query_text = context_data["patient_query"]
+    query_text = context_data.get("patient_query", "")
+    patient_name = context_data.get("patient_name", "Pasien")
+    medical_history = ", ".join(context_data.get("medical_history", []))
+    patient_address = context_data.get("patient_address", "UNKNOWN_PATIENT")
 
+    # ===============================
     # Vector Store & Retriever
-    vectorstore = Chroma(client=CHROMA_CLIENT, collection_name=COLLECTION_NAME)
+    # ===============================
+    vectorstore = Chroma(
+        client=CHROMA_CLIENT,
+        collection_name=COLLECTION_NAME
+    )
     retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
+    print("[RAG] RETRIEVER READY")
 
-    # Prompt TANPA tanda vital
+    # ===============================
+    # Prompt Template (FINAL)
+    # ===============================
     prompt_template = """
-    Anda adalah asisten medis Nusacare. Gunakan 'INFORMASI PASIEN' dan 'KONTEKS HERBAL' di bawah ini
-    untuk menjawab 'KELUHAN PASIEN' secara personal.
+Anda adalah asisten medis Nusacare.
 
-    INFORMASI PASIEN:
-    Nama: {patient_name}
-    Riwayat Medis: {medical_history}
+INFORMASI PASIEN:
+Nama: {patient_name}
+Riwayat Medis: {medical_history}
 
-    KELUHAN PASIEN:
-    {query_text}
+KELUHAN PASIEN:
+{query_text}
 
-    KONTEKS HERBAL (Gunakan hanya informasi dari sini sebagai referensi faktual):
-    {context}
+KONTEKS HERBAL:
+{context}
 
-    Berikan output:
-    1. Analisis Singkat
-    2. Langkah Perawatan Diri
-    3. Saran Herbal (Nama, Manfaat, Dosis aman)
-    """
+Berikan jawaban terstruktur:
+1. Analisis Singkat
+2. Langkah Perawatan Diri
+3. Saran Herbal (Nama, Manfaat, Dosis aman)
+"""
 
-    full_prompt = prompt_template.format(
-        patient_name=context_data["patient_name"],
-        medical_history=", ".join(context_data["medical_history"]),
-        query_text=query_text,
-        context="{context}",
+    QA_CHAIN_PROMPT = PromptTemplate(
+        input_variables=["patient_name", "medical_history", "query_text", "context"],
+        template=prompt_template,
     )
 
-    QA_CHAIN_PROMPT = PromptTemplate.from_template(full_prompt)
+ # ===============================
+    # Prompt Template dengan Variabel Parsial
+    # ===============================
+    # Kita memasukkan data pasien langsung ke template sebelum masuk ke chain
+    # Ini memecah error "Extra inputs are not permitted"
+    
+    final_prompt = QA_CHAIN_PROMPT.partial(
+        patient_name=patient_name,
+        medical_history=medical_history,
+        query_text=query_text
+    )
 
-    # RAG Pipeline
+    # ===============================
+    # RAG Pipeline (VERSI FINAL)
+    # ===============================
     qa_chain = RetrievalQA.from_chain_type(
         llm=GEMMA_LLM,
         chain_type="stuff",
         retriever=retriever,
-        chain_type_kwargs={"prompt": QA_CHAIN_PROMPT},
+        return_source_documents=False,
+        chain_type_kwargs={
+            "prompt": final_prompt  # Gunakan prompt yang sudah di-partial
+        },
     )
 
-    # Eksekusi RAG
+    print("[RAG] CALLING LLM")
+    # RetrievalQA sekarang hanya menerima 'query', variabel lain sudah aman di dalam prompt
     response = qa_chain.invoke({"query": query_text})
-    recommendation_text = response["result"]
+    print("[RAG] LLM FINISHED")
 
+    recommendation_text = response.get("result", "Tidak ada rekomendasi.")
+
+    # ===============================
     # IPFS & Blockchain
-    patient_address = context_data.get("patient_address", "UNKNOWN_PATIENT")
-
+    # ===============================
     try:
         timestamp = w3.eth.get_block("latest")["timestamp"]
-    except:
+    except Exception:
         timestamp = "Simulasi Time"
 
     recommendation_data_for_ipfs = {
@@ -100,7 +128,8 @@ def generate_recommendation(context_data: dict) -> str:
     }
 
     recommendation_cid = upload_to_ipfs(
-        recommendation_data_for_ipfs, is_encrypted=True
+        recommendation_data_for_ipfs,
+        is_encrypted=True
     )
 
     if recommendation_cid:
@@ -109,6 +138,6 @@ def generate_recommendation(context_data: dict) -> str:
             cid=recommendation_cid,
             data_type="RECOMMENDATION_RESULT",
         )
-        print(f"CID {recommendation_cid} dicatat di Blockchain: {tx_hash}")
+        print(f"[BLOCKCHAIN] CID {recommendation_cid} dicatat: {tx_hash}")
 
     return recommendation_text
